@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RU Access</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Inter font -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7fafc; /* Light gray background */
+        }
+        /* Style for the Access Granted data display */
+        .access-granted-data {
+            color: #1e40af; /* Blue 800 */
+            font-size: 1.25rem; /* text-xl */
+        }
+    </style>
+    <!-- Load jsQR library -->
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+    <!-- Main Application Container -->
+    <div id="app-container" class="w-full max-w-lg bg-white shadow-2xl rounded-xl p-6 transition-all duration-300">
+        <h1 class="text-3xl font-extrabold text-gray-900 mb-6 text-center">
+            <!-- LOGO PLACED HERE - Size increased to w-10 h-10 (40x40) -->
+            <img src="logo.png" alt="App Logo Placeholder" class="inline-block w-10 h-10">
+            RU-Pass
+        </h1>
+
+        <!-- Video and Canvas Area (Updated to aspect-[4/3] for rectangular shape) -->
+        <div class="relative w-full aspect-[4/3] bg-gray-200 rounded-lg overflow-hidden shadow-inner mb-4 flex items-center justify-center">
+            <!-- Hidden Video element (used to get the stream from camera) -->
+            <video id="video" playsinline autoplay class="absolute w-full h-full object-cover hidden"></video>
+            <!-- Canvas element (used to draw video frames and decode/highlight) -->
+            <canvas id="canvas" class="w-full h-full"></canvas>
+
+            <!-- Loading/Initial State Overlay -->
+            <div id="loadingMessage" class="absolute inset-0 bg-gray-800 bg-opacity-90 flex items-center justify-center p-4">
+                <p class="text-white text-center text-lg font-medium">Click "Scan ID" to enable scanning.</p>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="flex flex-col space-y-3">
+            <button id="startButton" class="w-full px-4 py-3 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 transition duration-150 ease-in-out">
+                Scan ID
+            </button>
+
+            <!-- Status and Result Area -->
+            <div id="outputSection" class="bg-indigo-50 p-4 rounded-lg border border-indigo-200">
+                <p class="text-sm font-medium text-indigo-700 mb-2">Status:</p>
+                <div id="outputMessage" class="text-gray-700 text-sm font-light">Waiting for camera permission...</div>
+            </div>
+            
+            <div id="outputResultContainer" class="hidden bg-green-50 p-4 rounded-lg border border-green-200 mt-3">
+                <p class="text-sm font-medium text-green-700 mb-2">QR Data Found:</p>
+                <div id="outputData" class="text-green-900 text-base font-semibold break-all"></div>
+                
+                <button id="copyButton" class="mt-3 w-full px-3 py-2 text-sm bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition duration-150 ease-in-out flex items-center justify-center">
+                    <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5h2M8 5a2 2 0 002 2h2M12 22v-4M16 8V6a2 2 0 00-2-2H8a2 2 0 00-2 2v2m8 0h.01"></path></svg>
+                    Copy to Clipboard
+                </button>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Custom Modal for Errors/Messages/Success (POP-UP) -->
+    <div id="customModal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-75 z-50 flex items-center justify-center p-4">
+        <div id="modalContent" class="bg-white rounded-lg p-6 max-w-sm w-full shadow-2xl transition-all duration-300 transform scale-100">
+            <h3 id="modalTitle" class="text-xl font-bold mb-3 text-red-600">Error</h3>
+            <p id="modalMessage" class="text-gray-700 mb-4"></p>
+            <!-- Data display specific to the granted/denied access key -->
+            <div id="modalDataDisplay" class="hidden bg-gray-100 p-3 rounded-md mb-4 font-mono text-base break-all text-center text-blue-800 font-bold"></div>
+            <button id="modalOkButton" class="w-full px-4 py-2 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition">Close</button>
+        </div>
+    </div>
+
+    <script>
+        // Application DOM Elements
+        const video = document.getElementById("video");
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+        const loadingMessage = document.getElementById("loadingMessage");
+        const outputMessage = document.getElementById("outputMessage");
+        const outputSection = document.getElementById("outputSection");
+        const outputData = document.getElementById("outputData");
+        const outputResultContainer = document.getElementById("outputResultContainer");
+        const startButton = document.getElementById("startButton");
+        const copyButton = document.getElementById("copyButton");
+        
+        // Modal Elements
+        const modal = document.getElementById('customModal');
+        const modalTitle = document.getElementById('modalTitle');
+        const modalMessage = document.getElementById('modalMessage');
+        const modalDataDisplay = document.getElementById('modalDataDisplay');
+        const modalOkButton = document.getElementById('modalOkButton');
+
+        // Application State
+        let stream = null; 
+        let isScanning = false;
+        let isCameraActive = false;
+        let lastDecodedData = "";
+        
+        // --- Modal and UI Functions ---
+
+        const showModal = (title, message, data = null, isSuccess = false, okCallback = null) => {
+            // Reset styles
+            modalTitle.className = 'text-xl font-bold mb-3';
+            modalOkButton.className = 'w-full px-4 py-2 font-semibold rounded-lg transition';
+
+            // Set Title Color based on success
+            if (isSuccess) {
+                modalTitle.classList.add('text-blue-600');
+            } else {
+                modalTitle.classList.add('text-red-600');
+            }
+            
+            // Set OK Button functionality and style
+            if (okCallback) {
+                // If a callback is provided (used for both success and denial to reset the UI)
+                modalOkButton.textContent = "OK";
+                // Set button color based on success
+                if (isSuccess) {
+                    modalOkButton.classList.add('bg-blue-600', 'hover:bg-blue-700');
+                } else {
+                    modalOkButton.classList.add('bg-red-600', 'hover:bg-red-700');
+                }
+                modalOkButton.onclick = () => {
+                    modal.classList.add('hidden');
+                    okCallback(); // Execute reset function
+                };
+            } else {
+                // Default close behavior (used for camera errors)
+                modalOkButton.textContent = "Close";
+                modalOkButton.classList.add('bg-red-600', 'hover:bg-red-700');
+                modalOkButton.onclick = () => modal.classList.add('hidden');
+            }
+
+            modalTitle.textContent = title;
+            modalMessage.textContent = message;
+
+            if (data) {
+                modalDataDisplay.textContent = data;
+                modalDataDisplay.classList.remove('hidden');
+            } else {
+                modalDataDisplay.classList.add('hidden');
+            }
+
+            modal.classList.remove('hidden');
+        };
+        
+        const resetAppUI = () => {
+            // Clear data display
+            lastDecodedData = "";
+            outputData.textContent = "";
+            outputResultContainer.classList.add("hidden");
+            
+            // Reset status message and button
+            startButton.textContent = "Start Camera";
+            outputMessage.textContent = "Application loaded. Ready to start the camera.";
+            
+            // Ensure all styles are back to initial state
+            resetStyles(); 
+        };
+
+        const drawLine = (begin, end, color) => {
+            ctx.beginPath();
+            ctx.moveTo(begin.x, begin.y);
+            ctx.lineTo(end.x, end.y);
+            ctx.lineWidth = 4;
+            ctx.strokeStyle = color;
+            ctx.stroke();
+        };
+
+        const resetStyles = () => {
+            // Reset output section to default (indigo)
+            outputSection.classList.remove("access-granted");
+            outputSection.classList.add("bg-indigo-50", "border-indigo-200");
+            outputMessage.classList.remove("text-blue-700", "font-bold", "text-lg");
+            outputMessage.classList.add("text-gray-700", "font-light", "text-sm");
+
+            // Reset result container to default (green)
+            outputResultContainer.classList.remove("bg-green-50", "border-green-200");
+            outputData.classList.remove("access-granted-data");
+            outputData.classList.add("text-green-900", "text-base");
+            
+            copyButton.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+            copyButton.classList.add('bg-green-600', 'hover:bg-green-700');
+        };
+
+        // --- Core Scanning Logic ---
+
+        const tick = () => {
+            if (!isScanning) return; 
+
+            loadingMessage.classList.add("hidden");
+            
+            if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                canvas.height = video.videoHeight;
+                canvas.width = video.videoWidth;
+
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                
+                const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                    inversionAttempts: "dontInvert",
+                });
+
+                if (code) {
+                    const highlightColor = "#FF3B58";
+                    drawLine(code.location.topLeftCorner, code.location.topRightCorner, highlightColor);
+                    drawLine(code.location.topRightCorner, code.location.bottomRightCorner, highlightColor);
+                    drawLine(code.location.bottomRightCorner, code.location.bottomLeftCorner, highlightColor);
+                    drawLine(code.location.bottomLeftCorner, code.location.topLeftCorner, highlightColor);
+
+                    if (code.data !== lastDecodedData) {
+                        lastDecodedData = code.data;
+                        outputData.textContent = code.data;
+                        outputResultContainer.classList.remove("hidden");
+                        
+                        // Check for 10-digit number
+                        const isTenDigitNumber = /^\d{10}$/.test(code.data.trim());
+
+                        // STOP SCANNING AND CAMERA FEED
+                        // This applies to both Access Granted and Access Denied
+                        isScanning = false;
+                        if (stream) {
+                            stream.getTracks().forEach(track => track.stop());
+                        }
+                        video.pause();
+                        isCameraActive = false;
+                        startButton.textContent = "Start Camera";
+
+                        if (isTenDigitNumber) {
+                            // ACCESS GRANTED LOGIC
+                            showModal(
+                                "✅ ACCESS GRANTED",
+                                "The is ID Card has been successfully verified!",
+                                code.data,
+                                true, // isSuccess
+                                resetAppUI 
+                            );
+                            outputMessage.textContent = "Access granted. Ready for new scan.";
+
+                        } else {
+                            // ACCESS DENIED LOGIC
+                            showModal(
+                                "❌ ACCESS DENIED",
+                                "This scanned ID Card is not valid",
+                                code.data,
+                                false, // isSuccess (triggers red styling)
+                                resetAppUI // Reset app on OK click
+                            );
+                            outputMessage.textContent = "Access check failed. Ready for new scan.";
+                        }
+                    }
+                } else {
+                    // No QR code found (Scanning continues implicitly via requestAnimationFrame outside this block)
+                    outputMessage.textContent = "Scanning... Hold a QR code in front of the camera.";
+                }
+            }
+
+            // Continue the scanning loop only if isScanning is true
+            if (isScanning) {
+                requestAnimationFrame(tick);
+            }
+        }
+
+        const stopCamera = () => {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+            isScanning = false;
+            isCameraActive = false;
+            video.classList.add("hidden");
+            startButton.textContent = "Start Camera";
+            outputMessage.textContent = "Camera stopped. Click 'Start Camera' to resume.";
+            loadingMessage.classList.remove("hidden");
+            resetStyles();
+        };
+
+        const startCamera = async () => {
+            if (isCameraActive && isScanning) {
+                stopCamera();
+                return;
+            }
+
+            outputMessage.textContent = "Requesting camera access...";
+            resetStyles();
+
+            try {
+                // Request back-facing camera if available, otherwise any camera
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: "environment" } 
+                });
+                
+                video.srcObject = stream;
+                video.classList.remove("hidden");
+                
+                // Once the video starts playing, begin scanning
+                video.onloadedmetadata = () => {
+                    video.play();
+                    isScanning = true;
+                    isCameraActive = true;
+                    startButton.textContent = "Stop Camera";
+                    outputMessage.textContent = "Camera active. Looking for QR code...";
+                    requestAnimationFrame(tick);
+                };
+
+            } catch (err) {
+                console.error("Camera access error:", err);
+                showModal("Camera Error", "Could not access the camera. Please ensure you have granted permission and that a camera is connected.", null, false);
+                outputMessage.textContent = "Camera access denied or no camera found.";
+            }
+        };
+
+        // Event Listeners
+        startButton.addEventListener('click', startCamera);
+
+        copyButton.addEventListener('click', () => {
+            const textToCopy = outputData.textContent;
+            
+            const tempInput = document.createElement('textarea');
+            tempInput.value = textToCopy;
+            document.body.appendChild(tempInput);
+            tempInput.select();
+            
+            try {
+                // Use document.execCommand('copy') for better iframe compatibility
+                document.execCommand('copy');
+                const originalText = copyButton.textContent;
+                copyButton.textContent = "Copied!";
+                
+                copyButton.classList.remove('bg-green-600', 'hover:bg-green-700');
+                copyButton.classList.add('bg-gray-500', 'hover:bg-gray-600');
+
+                setTimeout(() => {
+                    copyButton.textContent = originalText;
+                    copyButton.classList.remove('bg-gray-500', 'hover:bg-gray-600');
+                    copyButton.classList.add('bg-green-600', 'hover:bg-green-700');
+                }, 2000);
+
+            } catch (err) {
+                console.error('Failed to copy text:', err);
+                showModal("Copy Error", "Failed to copy text. Please try manually selecting and copying the data.", null, false);
+            }
+            document.body.removeChild(tempInput);
+        });
+
+        // --- Initial Setup ---
+        outputMessage.textContent = "Application loaded. Ready to start the camera.";
+        
+    </script>
+</body>
+</html>
